@@ -387,7 +387,7 @@ public class LinovelibParser {
             // 但為了簡化邏輯，這裡如果是純文本節點且非空白，直接作為 TextItem
             // 注意：getWholeText保留了換行符，如果只是換行符應忽略
             if (!text.trim().isEmpty()) {
-                 String cleaned = cleanText(text.trim());
+                 String cleaned = text.trim();
                  if (!cleaned.isEmpty()) {
                      items.add(new ChapterItem(ChapterItem.TYPE_TEXT, cleaned));
                      fullText.append(cleaned).append("\n\n");
@@ -421,12 +421,6 @@ public class LinovelibParser {
                 }
             }
         }
-    }
-    
-    private static String cleanText(String text) {
-        return text.replace("（內容加載失敗！請重載或更換瀏覽器）", "")
-                   .replace("【手機版頁面由於相容性問題暫不支持電腦端閱讀，請使用手機閱讀。】", "")
-                   .trim();
     }
 
     /**
