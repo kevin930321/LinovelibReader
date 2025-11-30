@@ -6,23 +6,28 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.linovelib.reader.R;
+import com.linovelib.reader.adapter.ChapterAdapter;
 import com.linovelib.reader.api.LinovelibAPI;
 import com.linovelib.reader.database.ReadingHistoryDao;
 import com.linovelib.reader.model.ChapterContent;
+import com.linovelib.reader.model.ChapterItem;
 import com.linovelib.reader.parser.LinovelibParser;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class ReaderActivity extends AppCompatActivity {
     private static final String TAG = "ReaderActivity";
 
-    private ScrollView scrollView;
-    private TextView tvChapterTitle, tvContent;
+    private RecyclerView recyclerView;
+    private ChapterAdapter adapter;
     private LinearLayout bottomNav;
     private Button btnPrevChapter, btnChapterList, btnNextChapter;
     private ProgressBar progressBar;
@@ -48,9 +53,6 @@ public class ReaderActivity extends AppCompatActivity {
 
         loadChapter(chapterUrl);
 
-        // Toggle navigation on content click
-        scrollView.setOnClickListener(v -> toggleNavigation());
-
         btnPrevChapter.setOnClickListener(v -> {
             if (currentContent != null && currentContent.getPrevChapterUrl() != null) {
                 loadChapter(currentContent.getPrevChapterUrl());
@@ -71,9 +73,21 @@ public class ReaderActivity extends AppCompatActivity {
     }
 
     private void initViews() {
-        scrollView = findViewById(R.id.scrollView);
-        tvChapterTitle = findViewById(R.id.tvChapterTitle);
-        tvContent = findViewById(R.id.tvContent);
+        recyclerView = findViewById(R.id.recyclerView);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
+        adapter = new ChapterAdapter();
+        adapter.setOnItemClickListener(this::toggleNavigation);
+        recyclerView.setAdapter(adapter);
+
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                if (Math.abs(dy) > 20 && bottomNav.getVisibility() == View.VISIBLE) {
+                    bottomNav.setVisibility(View.GONE);
+                }
+            }
+        });
+
         bottomNav = findViewById(R.id.bottomNav);
         btnPrevChapter = findViewById(R.id.btnPrevChapter);
         btnChapterList = findViewById(R.id.btnChapterList);
@@ -83,7 +97,7 @@ public class ReaderActivity extends AppCompatActivity {
 
     private void loadChapter(String url) {
         progressBar.setVisibility(View.VISIBLE);
-        tvContent.setVisibility(View.GONE);
+        recyclerView.setVisibility(View.GONE);
         bottomNav.setVisibility(View.GONE);
 
         new Thread(() -> {
@@ -96,7 +110,7 @@ public class ReaderActivity extends AppCompatActivity {
                     chapterUrl = url;
                     displayContent(content);
                     progressBar.setVisibility(View.GONE);
-                    tvContent.setVisibility(View.VISIBLE);
+                    recyclerView.setVisibility(View.VISIBLE);
 
                     // Save reading progress
                     if (novelId != null && chapterTitle != null) {
@@ -114,11 +128,27 @@ public class ReaderActivity extends AppCompatActivity {
     }
 
     private void displayContent(ChapterContent content) {
-        tvChapterTitle.setText(content.getTitle() != null ? content.getTitle() : chapterTitle);
-        tvContent.setText(content.getContent() != null ? content.getContent() : "無法載入章節內容");
+        List<ChapterItem> items = new ArrayList<>();
+        
+        // Add Title
+        String title = content.getTitle() != null ? content.getTitle() : chapterTitle;
+        items.add(new ChapterItem(ChapterItem.TYPE_TITLE, title));
+        
+        // Add content items
+        if (content.getItems() != null && !content.getItems().isEmpty()) {
+            items.addAll(content.getItems());
+        } else if (content.getContent() != null) {
+             // Fallback
+             items.add(new ChapterItem(ChapterItem.TYPE_TEXT, content.getContent()));
+        }
+        
+        adapter.setItems(items);
 
-        // Scroll to top
-        scrollView.scrollTo(0, 0);
+        // Scroll to top or restore position if implementing precise restore logic
+        recyclerView.scrollToPosition(0);
+        
+        // Note: Restoration from historyDao requires logic here if we want to support it on restart
+        // But user didn't ask for persistent position fix, just image display.
     }
 
     private void toggleNavigation() {
@@ -130,9 +160,12 @@ public class ReaderActivity extends AppCompatActivity {
     }
 
     private void saveReadingProgress() {
-        new Thread(() -> {
-            historyDao.saveReadingProgress(novelId, chapterUrl, chapterTitle, scrollView.getScrollY());
-        }).start();
+        if (recyclerView.getLayoutManager() instanceof LinearLayoutManager) {
+            int position = ((LinearLayoutManager) recyclerView.getLayoutManager()).findFirstVisibleItemPosition();
+            new Thread(() -> {
+                historyDao.saveReadingProgress(novelId, chapterUrl, chapterTitle, position);
+            }).start();
+        }
     }
 
     @Override

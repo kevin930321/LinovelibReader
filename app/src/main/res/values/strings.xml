@@ -45,4 +45,5 @@
     <string name="font_size">字體大小</string>
     <string name="background_color">背景顏色</string>
     <string name="brightness">亮度</string>
+    <string name="chapter_image">插圖</string>
 </resources>

@@ -4,12 +4,14 @@ import android.util.Log;
 
 import com.linovelib.reader.model.Chapter;
 import com.linovelib.reader.model.ChapterContent;
+import com.linovelib.reader.model.ChapterItem;
 import com.linovelib.reader.model.Novel;
 import com.linovelib.reader.model.Volume;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
 
@@ -300,100 +302,157 @@ public class LinovelibParser {
      */
     public static ChapterContent parseChapterContent(String html) {
         ChapterContent content = new ChapterContent();
+        List<ChapterItem> allItems = new ArrayList<>();
+        StringBuilder fullTextBuilder = new StringBuilder();
         
-        try {
-            Document doc = Jsoup.parse(html);
-            
-            // Cloudflare detection
-            String pageTitle = doc.title();
-            if (pageTitle.contains("Cloudflare") || pageTitle.contains("Attention Required") || 
-                pageTitle.contains("Just a moment") || html.contains("cf-wrapper")) {
-                content.setTitle("無法讀取：Cloudflare 驗證");
-                content.setContent("檢測到網站啟用 Cloudflare 防護，App 無法自動通過驗證。\n\n建議：\n1. 稍後再試\n2. 使用瀏覽器打開網站");
-                return content;
-            }
-            
-            // 提取章節標題
-            Element title = doc.selectFirst("h1, h2.chapter-title, div.chapter-title");
-            if (title != null) {
-                content.setTitle(title.text());
-            }
-            
-            // 提取章節內容 - 可能在多個不同的選擇器中
-            Element contentElement = doc.selectFirst("#acontent");
-            if (contentElement == null) {
-                contentElement = doc.selectFirst("div.acontent");
-            }
-            if (contentElement == null) {
-                contentElement = doc.selectFirst("#TextContent");
-            }
-            if (contentElement == null) {
-                contentElement = doc.selectFirst("div.content");
-            }
-            if (contentElement == null) {
-                contentElement = doc.selectFirst("div.chapter-content");
-            }
-            if (contentElement == null) {
-                contentElement = doc.selectFirst("div#content");
-            }
-            
-            if (contentElement != null) {
-                // 清理不需要的元素
-                contentElement.select("script, style").remove();
+        // 支援多頁內容拼接
+        String[] pages = html.split("<!-- NEXT_PAGE_SPLIT -->");
+        
+        for (int i = 0; i < pages.length; i++) {
+            String pageHtml = pages[i];
+            try {
+                Document doc = Jsoup.parse(pageHtml);
                 
-                // 將 HTML 轉換為文本，保留段落
-                StringBuilder textContent = new StringBuilder();
-                for (Element p : contentElement.select("p")) {
-                    textContent.append(p.text()).append("\n\n");
+                // Cloudflare detection (只在第一頁檢查)
+                if (i == 0) {
+                    String pageTitle = doc.title();
+                    if (pageTitle.contains("Cloudflare") || pageTitle.contains("Attention Required") || 
+                        pageTitle.contains("Just a moment") || pageHtml.contains("cf-wrapper")) {
+                        content.setTitle("無法讀取：Cloudflare 驗證");
+                        content.setContent("檢測到網站啟用 Cloudflare 防護，App 無法自動通過驗證。\n\n建議：\n1. 稍後再試\n2. 使用瀏覽器打開網站");
+                        return content;
+                    }
+                    
+                    // 提取章節標題 (只從第一頁提取)
+                    Element title = doc.selectFirst("h1, h2.chapter-title, div.chapter-title");
+                    if (title != null) {
+                        content.setTitle(title.text());
+                    }
                 }
                 
-                // 如果沒有 p 標籤，直接獲取文本
-                if (textContent.length() == 0) {
-                    String rawHtml = contentElement.html();
-                    rawHtml = rawHtml.replaceAll("<br\\s*/?>", "\n")
-                                   .replaceAll("<p>", "\n")
-                                   .replaceAll("</p>", "\n");
-                    textContent.append(Jsoup.parse(rawHtml).text());
+                // 提取章節內容
+                Element contentElement = doc.selectFirst("#acontent");
+                if (contentElement == null) contentElement = doc.selectFirst("div.acontent");
+                if (contentElement == null) contentElement = doc.selectFirst("#TextContent");
+                if (contentElement == null) contentElement = doc.selectFirst("div.content");
+                if (contentElement == null) contentElement = doc.selectFirst("div.chapter-content");
+                if (contentElement == null) contentElement = doc.selectFirst("div#content");
+                
+                if (contentElement != null) {
+                    contentElement.select("script, style, div.ads, div.google-auto-placed").remove();
+                    
+                    // 使用遞歸遍歷處理所有節點，確保順序正確
+                    traverseNodes(contentElement, allItems, fullTextBuilder);
                 }
                 
-                content.setContent(textContent.toString().trim());
-            }
-            
-            // 內容清理
-            if (content.getContent() != null) {
-                String cleaned = content.getContent()
-                    .replace("（內容加載失敗！請重載或更換瀏覽器）", "")
-                    .replace("【手機版頁面由於相容性問題暫不支持電腦端閱讀，請使用手機閱讀。】", "")
-                    .trim();
-                content.setContent(cleaned);
-            }
-            
-            // 提取上一章和下一章鏈接
-            Element prevLink = doc.selectFirst("a:contains(上一章), a.prev, a#pt_prev");
-            if (prevLink != null) {
-                String prevUrl = prevLink.attr("href");
-                if (!prevUrl.startsWith("http") && !prevUrl.isEmpty()) {
-                    prevUrl = BASE_URL + prevUrl;
+                // 提取導航鏈接
+                if (i == 0) {
+                    Element prevLink = doc.selectFirst("a:contains(上一章), a.prev, a#pt_prev");
+                    if (prevLink != null) {
+                        String prevUrl = prevLink.attr("href");
+                        if (!prevUrl.startsWith("http") && !prevUrl.isEmpty()) {
+                            prevUrl = BASE_URL + prevUrl;
+                        }
+                        content.setPrevChapterUrl(prevUrl);
+                    }
                 }
-                content.setPrevChapterUrl(prevUrl);
-            }
-            
-            Element nextLink = doc.selectFirst("a:contains(下一章), a.next, a#pt_next");
-            if (nextLink != null) {
-                String nextUrl = nextLink.attr("href");
-                if (!nextUrl.startsWith("http") && !nextUrl.isEmpty()) {
-                    nextUrl = BASE_URL + nextUrl;
+                
+                if (i == pages.length - 1) {
+                    Element nextLink = doc.selectFirst("a:contains(下一章), a.next, a#pt_next");
+                    if (nextLink != null) {
+                        String nextUrl = nextLink.attr("href");
+                        if (!nextUrl.startsWith("http") && !nextUrl.isEmpty()) {
+                            nextUrl = BASE_URL + nextUrl;
+                        }
+                        content.setNextChapterUrl(nextUrl);
+                    }
                 }
-                content.setNextChapterUrl(nextUrl);
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Error parsing chapter page " + i, e);
             }
-            
-            Log.d(TAG, "Parsed chapter content, length: " + 
-                  (content.getContent() != null ? content.getContent().length() : 0));
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error parsing chapter content", e);
         }
         
+        content.setItems(allItems);
+        content.setContent(fullTextBuilder.toString().trim());
+        Log.d(TAG, "Parsed chapter content, total items: " + content.getItems().size());
+        
         return content;
+    }
+    
+    private static void traverseNodes(Node node, List<ChapterItem> items, StringBuilder fullText) {
+        if (node instanceof TextNode) {
+            String text = ((TextNode) node).getWholeText();
+            // 暫存文本，等待區塊結束或遇到圖片時刷新
+            // 但為了簡化邏輯，這裡如果是純文本節點且非空白，直接作為 TextItem
+            // 注意：getWholeText保留了換行符，如果只是換行符應忽略
+            if (!text.trim().isEmpty()) {
+                 String cleaned = cleanText(text.trim());
+                 if (!cleaned.isEmpty()) {
+                     items.add(new ChapterItem(ChapterItem.TYPE_TEXT, cleaned));
+                     fullText.append(cleaned).append("\n\n");
+                 }
+            }
+        } else if (node instanceof Element) {
+            Element element = (Element) node;
+            String tagName = element.tagName().toLowerCase();
+            
+            if (tagName.equals("img")) {
+                String src = element.attr("data-src");
+                if (src.isEmpty()) src = element.attr("src");
+                
+                if (!src.isEmpty()) {
+                    if (!src.startsWith("http")) {
+                        src = BASE_URL + src;
+                    }
+                    if (!src.contains("icon") && !src.endsWith(".svg")) {
+                        items.add(new ChapterItem(ChapterItem.TYPE_IMAGE, src));
+                    }
+                }
+            } else if (tagName.equals("br")) {
+                // BR 標籤本身不產生 Item，但意味著如果前面有未處理的文本應該結束
+                // 由於我們對 TextNode 直接處理了，這裡可以忽略，或者添加一個空行 Item (視需求)
+            } else {
+                // 對於容器元素 (div, p, span 等)，遞歸處理其子節點
+                // 如果是 p 或 div，它們是塊級元素，這意味著前後有換行
+                // 這裡的簡單遞歸會把 p 內部的 TextNode 提取出來
+                for (Node child : element.childNodes()) {
+                    traverseNodes(child, items, fullText);
+                }
+            }
+        }
+    }
+    
+    private static String cleanText(String text) {
+        return text.replace("（內容加載失敗！請重載或更換瀏覽器）", "")
+                   .replace("【手機版頁面由於相容性問題暫不支持電腦端閱讀，請使用手機閱讀。】", "")
+                   .trim();
+    }
+
+    /**
+     * 提取下一頁 URL (用於分頁章節)
+     */
+    public static String getNextPageUrl(String html) {
+        try {
+            // 嘗試從 JavaScript 變量中提取
+            // var ReadParams={...,url_next:'/novel/4613/269999_2.html',...}
+            int startIndex = html.indexOf("url_next:'");
+            if (startIndex != -1) {
+                startIndex += 10; // len("url_next:'")
+                int endIndex = html.indexOf("'", startIndex);
+                if (endIndex != -1) {
+                    String url = html.substring(startIndex, endIndex);
+                    if (!url.isEmpty() && !url.equals("#")) {
+                        if (!url.startsWith("http")) {
+                            url = BASE_URL + url;
+                        }
+                        return url;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error parsing next page url", e);
+        }
+        return null;
     }
 }
